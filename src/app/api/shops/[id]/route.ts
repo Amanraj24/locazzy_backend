@@ -4,21 +4,22 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { RowDataPacket, ResultSetHeader } from 'mysql2';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const shopId = params.id;
+    const { id: shopId } = await params;
 
     // Get shop details
-    const [shops] = await db.query(
+    const [shops] = await db.query<RowDataPacket[]>(
       'SELECT * FROM v_shop_details WHERE shop_id = ?',
       [shopId]
     );
 
-    if (!Array.isArray(shops) || shops.length === 0) {
+    if (shops.length === 0) {
       return NextResponse.json(
         { error: 'Shop not found' },
         { status: 404 }
@@ -26,13 +27,13 @@ export async function GET(
     }
 
     // Get photos
-    const [photos] = await db.query(
+    const [photos] = await db.query<RowDataPacket[]>(
       'SELECT photo_url FROM shop_photos WHERE shop_id = ? ORDER BY photo_order',
       [shopId]
     );
 
     // Increment view count
-    await db.query(
+    await db.query<ResultSetHeader>(
       'UPDATE shops SET total_views = total_views + 1 WHERE shop_id = ?',
       [shopId]
     );
