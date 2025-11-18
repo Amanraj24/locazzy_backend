@@ -1,21 +1,26 @@
-// FILE: app/api/dashboard/route.ts
-// Get dashboard statistics for shop owner
-// ============================================
-
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { RowDataPacket } from 'mysql2';
 
+interface ShopRow extends RowDataPacket {
+  shop_name: string;
+  is_visible: number;
+  visibility_radius_km: number;
+}
+
 interface StatsRow extends RowDataPacket {
-  total_views: number;
   total_chats: number;
   average_rating: number;
   total_ratings: number;
-  visibility_radius_km: number;
 }
 
 interface ViewsRow extends RowDataPacket {
   views_today: number;
+}
+
+// Interface for Categories returned by the view
+interface CategoryRow extends RowDataPacket {
+  category_name: string;
 }
 
 export async function GET(request: NextRequest) {
@@ -30,14 +35,52 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Get shop stats
+    // 1. Get core shop info (Name, Visibility, Radius)
+    const [shopInfoRows] = await db.query<ShopRow[]>(
+      `SELECT 
+        shop_name, 
+        is_visible, 
+        visibility_radius_km 
+      FROM shops 
+      WHERE shop_id = ?`,
+      [shopId]
+    );
+
+    if (shopInfoRows.length === 0) {
+      return NextResponse.json(
+        { error: 'Shop not found' },
+        { status: 404 }
+      );
+    }
+    const shopInfo = shopInfoRows[0];
+
+    // 2. Get shop categories
+    const [categoryRows] = await db.query<CategoryRow[]>(
+        `SELECT c.category_name 
+        FROM shop_categories sc
+        JOIN categories c ON sc.category_id = c.category_id
+        WHERE sc.shop_id = ?`,
+        [shopId]
+    );
+    const categories = categoryRows.map(row => row.category_name);
+
+
+    // 3. Get total stats (from assumed pre-calculated fields or views)
     const [shopStats] = await db.query<StatsRow[]>(
-      `SELECT total_views, total_chats, average_rating, total_ratings, visibility_radius_km
+      `SELECT total_chats, average_rating, total_ratings
        FROM shops WHERE shop_id = ?`,
       [shopId]
     );
 
-    // Get recent chats
+    // 4. Get today's views
+    const [todayViews] = await db.query<ViewsRow[]>(
+      `SELECT COALESCE(SUM(view_count), 0) as views_today
+       FROM shop_views
+       WHERE shop_id = ? AND view_date = CURDATE()`,
+      [shopId]
+    );
+
+    // 5. Get recent chats
     const [recentChats] = await db.query<RowDataPacket[]>(
       `SELECT * FROM v_recent_conversations 
        WHERE shop_id = ? 
@@ -46,7 +89,7 @@ export async function GET(request: NextRequest) {
       [shopId]
     );
 
-    // Get recent ratings
+    // 6. Get recent ratings
     const [recentRatings] = await db.query<RowDataPacket[]>(
       `SELECT r.*, u.full_name as user_name
        FROM ratings r
@@ -57,24 +100,41 @@ export async function GET(request: NextRequest) {
       [shopId]
     );
 
-    // Get today's views
-    const [todayViews] = await db.query<ViewsRow[]>(
-      `SELECT COALESCE(SUM(view_count), 0) as views_today
-       FROM shop_views
-       WHERE shop_id = ? AND view_date = CURDATE()`,
-      [shopId]
-    );
-
+    // 7. Structure and return the full dashboard data
     return NextResponse.json({
       success: true,
-      stats: {
-        totalChats: shopStats[0]?.total_chats || 0,
-        averageRating: shopStats[0]?.average_rating || 0,
-        viewsToday: todayViews[0]?.views_today || 0,
-        visibilityRadius: shopStats[0]?.visibility_radius_km || 5,
+      data: { // Wrapping the data in a 'data' object to match client expectation
+        shopInfo: {
+          shopName: shopInfo.shop_name,
+          isVisible: Boolean(shopInfo.is_visible),
+          visibilityRadius: shopInfo.visibility_radius_km || 5,
+          categories: categories,
+        },
+        stats: {
+          totalChats: shopStats[0]?.total_chats || 0,
+          activeChats: 0, // Placeholder - requires specific query for active chats
+          unreadMessages: 0, // Placeholder - requires specific query for unread counts
+          totalRatings: shopStats[0]?.total_ratings || 0,
+          averageRating: shopStats[0]?.average_rating || 0,
+          todayViews: todayViews[0]?.views_today || 0,
+          weekViews: 0, // Placeholder - requires query
+          monthViews: 0, // Placeholder - requires query
+        },
+        recentActivity: recentChats.map(chat => ({ 
+          id: chat.chat_id, 
+          type: 'chat', 
+          message: chat.latest_message_text, 
+          time: chat.updated_at, 
+          userName: chat.customer_name 
+        })),
+        topRatings: recentRatings.map(rating => ({
+          id: rating.rating_id,
+          userName: rating.user_name,
+          rating: rating.rating_value,
+          comment: rating.review_comment,
+          date: rating.created_at,
+        })),
       },
-      recentChats: recentChats,
-      recentRatings: recentRatings,
     });
   } catch (error: any) {
     console.error('Get dashboard error:', error);
