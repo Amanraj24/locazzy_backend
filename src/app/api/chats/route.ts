@@ -1,4 +1,4 @@
-// // FILE: app/api/chats/route.ts
+// FILE: app/api/chats/route.ts
 // Get all conversations
 // ============================================
 
